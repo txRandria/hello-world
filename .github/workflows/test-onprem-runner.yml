@@ -17,31 +17,79 @@ jobs:
       - self-hosted
       - onprem-cd
 
+    env:
+      DEPLOY_JOB_NAME: hello-world-kubectl-deploy
+      KUBECTL_IMAGE: alpine/kubectl:1.36.1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show tool versions
+      - name: Publish deployment inputs
         run: |
-          kubectl version --client
-          helm version --short
-          kustomize version
-
-      - name: Publish site ConfigMap
-        run: |
-          kubectl -n dev create configmap hello-world-site \
+          kubectl -n github-runner create configmap hello-world-site-source \
             --from-file=index.html \
             --from-file=styles.css \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy hello-world
-        run: kubectl apply -f k8s/hello-world.yaml
+          kubectl -n github-runner create configmap hello-world-manifest \
+            --from-file=hello-world.yaml=k8s/hello-world.yaml \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Check rollout
-        run: kubectl -n dev rollout status deployment/hello-world --timeout=120s
-
-      - name: Verify published page content
+      - name: Deploy with alpine kubectl job
         run: |
-          kubectl -n dev get configmap hello-world-site \
-            -o jsonpath='{.data.index\.html}' \
-            | grep -q "Welcome to your first GitHub Pages website"
+          kubectl -n github-runner delete job "$DEPLOY_JOB_NAME" --ignore-not-found=true
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${DEPLOY_JOB_NAME}
+            namespace: github-runner
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 300
+            template:
+              spec:
+                restartPolicy: Never
+                serviceAccountName: github-cd-runner
+                containers:
+                  - name: kubectl
+                    image: ${KUBECTL_IMAGE}
+                    command:
+                      - /bin/sh
+                      - -ec
+                      - |
+                        kubectl version --client
+                        kubectl -n dev create configmap hello-world-site \
+                          --from-file=index.html=/site/index.html \
+                          --from-file=styles.css=/site/styles.css \
+                          --dry-run=client -o yaml | kubectl apply -f -
+                        kubectl apply -f /manifests/hello-world.yaml
+                        kubectl -n dev rollout status deployment/hello-world --timeout=120s
+                        kubectl -n dev get configmap hello-world-site \
+                          -o jsonpath='{.data.index\.html}' \
+                          | grep -q "Welcome to your first GitHub Pages website"
+                    volumeMounts:
+                      - name: site-source
+                        mountPath: /site
+                        readOnly: true
+                      - name: manifest
+                        mountPath: /manifests
+                        readOnly: true
+                volumes:
+                  - name: site-source
+                    configMap:
+                      name: hello-world-site-source
+                  - name: manifest
+                    configMap:
+                      name: hello-world-manifest
+          EOF
+
+          if ! kubectl -n github-runner wait --for=condition=complete "job/${DEPLOY_JOB_NAME}" --timeout=180s; then
+            kubectl -n github-runner logs "job/${DEPLOY_JOB_NAME}" || true
+            kubectl -n github-runner describe "job/${DEPLOY_JOB_NAME}" || true
+            exit 1
+          fi
+
+          kubectl -n github-runner logs "job/${DEPLOY_JOB_NAME}"
