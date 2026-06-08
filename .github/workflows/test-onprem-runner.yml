@@ -40,5 +40,8 @@ jobs:
       - name: Check rollout
         run: kubectl -n dev rollout status deployment/hello-world --timeout=120s
 
-      - name: Verify mounted page
-        run: kubectl -n dev exec deploy/hello-world -- grep -q "Welcome to your first GitHub Pages website" /usr/share/nginx/html/index.html
+      - name: Verify published page content
+        run: |
+          kubectl -n dev get configmap hello-world-site \
+            -o jsonpath='{.data.index\.html}' \
+            | grep -q "Welcome to your first GitHub Pages website"
