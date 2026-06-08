@@ -1,0 +1,44 @@
+name: Test On-Prem Runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - "index.html"
+      - "styles.css"
+      - "k8s/**"
+      - ".github/workflows/test-onprem-runner.yml"
+
+jobs:
+  deploy:
+    runs-on:
+      - self-hosted
+      - onprem-cd
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        run: |
+          kubectl version --client
+          helm version --short
+          kustomize version
+
+      - name: Publish site ConfigMap
+        run: |
+          kubectl -n dev create configmap hello-world-site \
+            --from-file=index.html \
+            --from-file=styles.css \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy hello-world
+        run: kubectl apply -f k8s/hello-world.yaml
+
+      - name: Check rollout
+        run: kubectl -n dev rollout status deployment/hello-world --timeout=120s
+
+      - name: Verify mounted page
+        run: kubectl -n dev exec deploy/hello-world -- grep -q "Welcome to your first GitHub Pages website" /usr/share/nginx/html/index.html
